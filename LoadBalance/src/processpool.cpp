@@ -13,6 +13,41 @@ static int setnonblocking( int fd )
 	return old_option;
 }
 
+void log_info(int err_info,time_t time,int level = 0,int downtime_sfd = -1)
+{
+	//FILE f;
+	fstream f;
+	f.open("./log.xml");
+	Log log;
+//	log.ip = ip;
+//	log.port = port;
+	log.time = time;
+	log.level = level;
+	log.err_info = err_info;
+	log.downtime_sfd = downtime_sfd;
+//	f<<log.ip<<endl;
+//	f<<log.port<<endl;
+	tm *pTmp = localtime(&log.time);
+	char nowtime[64];
+	sprintf(nowtime,"%d-%d-%d %d:%d:%d",pTmp->tm_year +1900,pTmp->tm_mon+1,pTmp->tm_mday,pTmp->tm_hour,pTmp->tm_min,pTmp->tm_sec);
+	f<<"错误产生时间:"<<nowtime<<endl;
+	if(log.level == 1)
+	{
+		f<<"错误严重等级:严重"<<endl;
+	}
+	else if(log.level == 0)
+	{
+		f<<"错误严重等级:轻微"<<endl;
+	}
+	if(log.err_info == 1)
+		f<<"错误信息:服务器宕机"<<endl;
+	else if(log.err_info == -1)
+		f<<"错误信息:缓冲区错误"<<endl;
+	f<<"宕机服务器sock id:"<<log.downtime_sfd<<endl;
+	f<<"\n"<<endl;
+	f.close();
+}
+
 static void addfd( int epollfd, int fd )
 {
 	epoll_event event;
@@ -30,10 +65,13 @@ static void removefd( int epollfd, int fd )
 
 static void sig_handler( int sig )
 {
+	Log log;
 	int save_errno = errno;
 	int msg = sig;
 	send( sig_pipefd[1], ( char* )&msg, 1, 0 );
 	errno = save_errno;
+	//log.err_info = errno;
+	//log(log.err_info);
 }
 
 static void addsig( int sig, void( handler )(int), bool restart = true )
@@ -198,6 +236,7 @@ void processpool::run_child()
 					user.push_back(u);
 				}
 			}
+			//服务器
 			else if((retfd == socketfd) && events[i].events == EPOLLIN)
 			{
 				char buff[BUFF_SIZE]={0};
@@ -215,6 +254,14 @@ void processpool::run_child()
 				else if(ret == 0)
 				{
 					list<User>::iterator it_use =  user.begin();	
+					Log log;
+					log.downtime_sfd = retfd;
+					log.err_info = 1;
+					time_t now_time;
+					now_time = time(NULL);
+					log.level = 1;
+					log_info(log.err_info,now_time,log.level,retfd);
+
 					cout<<"服务器异常中断"<<endl;
 					list<Conum>::iterator ite_con = con.begin();
 					int min_sfd = 2147483647;
@@ -271,14 +318,14 @@ void processpool::run_child()
 					{
 						if(it_use->servfd == retfd)
 						{	
-							send(it_use->servfd,"YES",3,0);
+							send(it_use->servfd,"YES\n",4,0);
 							send(it_use->connfd,buff,BUFF_SIZE,0);
 						}
 					}
 				}
 			}
-
-			else if(events[i].events == EPOLLIN)
+			//客户端
+			else if((retfd != socketfd) && events[i].events == EPOLLIN)
 			{
 				char buff[BUFF_SIZE]={0};
 				int ret = recv(retfd,buff,BUFF_SIZE,0);
@@ -329,7 +376,7 @@ a:
 						cout<<"it_use->servfd"<<it_use->servfd<<endl;
 						if(it_use->connfd == retfd)
 						{
-						//	send(it_use->connfd,"YES",3,0);
+							send(it_use->connfd,"YES\n",4,0);
 							int nlen = send(it_use->servfd,buff,BUFF_SIZE,0);
 							/*	if(nlen <= 0)
 								{
@@ -386,6 +433,7 @@ void processpool::run_parent()
 		{
 			cout<<"epoll error "<<endl;
 			break;
+			//continue;
 		}
 
 		for(int i=0;i<num ;++i)

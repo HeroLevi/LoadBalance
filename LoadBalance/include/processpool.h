@@ -17,6 +17,7 @@
 #include <list>
 #include <signal.h>
 #include <unistd.h>
+#include <fstream>
 
 #include "struct.h"
 #include "process.h"
