@@ -6,10 +6,6 @@ static int sig_pipefd[2];
 ProcessPool::ProcessPool(int listenfd,int process_num):m_listenfd(listenfd),m_process_num(process_num),m_fork_id(-1),m_stop(true)
 {
 	servflag = false;
-	if(pthread_mutex_init(&mem_lock,NULL) != 0)
-	{
-		perror("mutex init faild");
-	}
 	if(process_num <=0 || process_num > MAX_PNUM)
 		cout<<"进程数量越界"<<endl;
 
@@ -33,7 +29,7 @@ ProcessPool::ProcessPool(int listenfd,int process_num):m_listenfd(listenfd),m_pr
 			//子进程关闭写端
 			close(m_sub_process[i].m_pipefd[0]);
 			m_fork_id = i;
-			//break;
+		//	break;
 		}
 	}
 }
@@ -100,7 +96,7 @@ void ProcessPool::addsig(int sig,void(handler)(int),bool restart)
 
 void ProcessPool::setup_sig_pipe()
 {
-	m_epollfd = epoll_create(5);
+	m_epollfd = epoll_create(10000);
 	assert(m_epollfd != -1);
 
 	int ret = socketpair(PF_UNIX,SOCK_STREAM,0,sig_pipefd);
@@ -123,15 +119,10 @@ void ProcessPool::run_child()
 	int pipefd = m_sub_process[m_fork_id].m_pipefd[1];
 	addfd(m_epollfd,pipefd);
 	setnonblocking(m_listenfd);
-
 	ShareMemory mem;
-
-	pthread_mutex_lock(&mem_lock);
 	list<Serv_load> m_Map = mem.GetMap();
-	pthread_mutex_unlock(&mem_lock);
-
 	list<Serv_load>::iterator itemap = m_Map.begin();
-
+	bool servflag = true;
 
 	while(itemap != m_Map.end())
 	{
@@ -139,6 +130,7 @@ void ProcessPool::run_child()
 		if((itemap->serv_fd) != 0)
 		{
 			addfd(m_epollfd,itemap->serv_fd);
+			//cout<<itemap->serv_fd<<endl;
 		}
 		++itemap;
 	}
@@ -176,155 +168,146 @@ void ProcessPool::run_child()
 				u.cfd = cfd;
 
 				//最小连接数
-				//		ShareMemory mem;
-				pthread_mutex_lock(&mem_lock);
+				ShareMemory mem;
 				list<Serv_load> m_Map = mem.GetMap();
-				pthread_mutex_unlock(&mem_lock);
 
-				itemap = m_Map.begin();
-				while(itemap != m_Map.end())
-				{
-					cout<<itemap->serv_fd<<endl;
-					cout<<itemap->con_num<<endl;
-					++itemap;
-				}
+				list<Serv_load>::iterator itemap = m_Map.begin();
 				int mincon = 2147483647;
 				int minsock = -1;
-				itemap = m_Map.begin();
-				
 				while(itemap != m_Map.end())
 				{
-	//				cout<<"sfd["<<itemap->serv_fd<<"] num["<<itemap->con_num<<"]"<<endl;
-
 					if(mincon > itemap->con_num)
 					{
 						mincon = itemap->con_num;
-						cout<<"mincon["<<mincon<<"]"<<endl;
 						minsock = itemap->serv_fd;
-						cout<<"minsock["<<minsock<<"]"<<endl;
 					}
 					++itemap;
 				}
 				u.sfd = minsock;
-				cout<<"连接数最小的sock["<<minsock<<"]"<<endl;
 				user.push_back(u);
 
-				pthread_mutex_lock(&mem_lock);
-
 				if(minsock == 3)
-				{
-					++mem.num[0];
-					cout<<"mem.num[0] = ["<<mem.num[0]<<"]"<<endl;
-					mem.mMap(mem.sfd,mem.num);
-				}
+					mem.mMap(minsock,++mincon,0);
 				else if(minsock == 4)
-				{
-					++mem.num[1];
-					cout<<"mem.num[1] = ["<<mem.num[1]<<"]"<<endl;
-					mem.mMap(mem.sfd,mem.num);
-				}
+					mem.mMap(minsock,++mincon,1);
 				else if(minsock == 5)
-				{
-					++mem.num[2];
-					cout<<"mem.num[2] = ["<<mem.num[2]<<"]"<<endl;
-					mem.mMap(mem.sfd,mem.num);
-				}
+					mem.mMap(minsock,++mincon,2);
 
-				pthread_mutex_unlock(&mem_lock);
-		
-		/*			for(int k=0;k<3;k++)
-					{
-						cout<<"sfd------|"<<mem.sfd[k]<<endl;
-						cout<<"num------|"<<mem.num[k]<<endl;
-					}*/
+				//			cout<<"mincon:"<<mincon<<endl;
+				//			cout<<"minsock:"<<minsock<<endl;
+
 			}
 			else if(events[i].events & EPOLLIN)
 			{
 				ShareMemory mem;
 				list<Serv_load> m_Map = mem.GetMap();
 				list<Serv_load>::iterator itemap = m_Map.begin();
-				//list<Serv_load>::iterator Ismap = m_Map.begin();
-
-				servflag = false;
-
-				char* buf = NULL;
-				int nlen;
-				int packsize;
-				int RealReadNum = recv(retfd,(char*)&packsize,sizeof(int),0);
-				nlen = packsize;
-				list<User>::iterator ite = user.begin();
-				if(RealReadNum < 0)
-					continue;
-				if(RealReadNum == 0)
+				list<Serv_load>::iterator Ismap = m_Map.begin();
+				while(Ismap != m_Map.end())
 				{
-
-					itemap = m_Map.begin();
-
-					while(ite != user.end())
+					//		cout<<"itemap->serv_fd:"<<itemap->serv_fd<<endl;
+					//		cout<<"retfd:"<<retfd<<endl;
+					if(retfd != 0 && (retfd != Ismap->serv_fd))
 					{
-						if(ite->cfd == retfd)
+						servflag = false;
+
+						char* buf = NULL;
+						int nlen;
+						int packsize;
+						int RealReadNum = recv(retfd,(char*)&packsize,sizeof(int),0);
+						nlen = packsize;
+						list<User>::iterator ite = user.begin();
+						if(RealReadNum < 0)
+							continue;
+						if(RealReadNum == 0)
 						{
-							break;
-						}
-						++ite;
-					}
-					pthread_mutex_lock(&mem_lock);
+							//list<Serv_load> m_Map = mem.GetMap();
+							/*list<Serv_load>::iterator*/ itemap = m_Map.begin();
 
-					if(ite->sfd == 3)
-					{
-						--mem.num[0];
-						cout<<"mem.num[0] = ["<<mem.num[0]<<"]"<<endl;
-						mem.mMap(mem.sfd,mem.num);
+							while(ite != user.end())
+							{
+								if(ite->cfd == retfd)
+								{
+									break;
+								}
+								++ite;
+							}
+
+							if(ite->sfd == 3)
+								mem.mMap(ite->sfd,--itemap->con_num,0);
+							else if(ite->sfd == 4)
+								mem.mMap(ite->sfd,--(itemap++)->con_num,1);
+							else if(ite->sfd == 5)
+								mem.mMap(ite->sfd,--((itemap++)++)->con_num,2);
+
+							removefd(m_epollfd,retfd);
+							close(retfd);
+						}
+						else
+						{
+							int noffset = 0;
+							cout<<m_fork_id<<"client.packsize:"<<packsize<<endl;
+							buf = new char[packsize];
+							bzero(buf,packsize);
+							while(packsize)
+							{
+								RealReadNum = recv(retfd,buf+noffset,packsize,0);
+								noffset += RealReadNum;
+								packsize -= RealReadNum;
+							}
+							cout<<"client.buf:"<<buf<<endl;
+								ite = user.begin();
+								while(ite != user.end())
+								{
+								if(ite->cfd == retfd)
+								{
+									break;
+								}
+								++ite;
+								}
+								send(ite->sfd,(char*)&nlen,sizeof(int),0);
+								send(ite->sfd,buf,nlen,0);
+								delete[] buf;
+							 
+						}
 					}
-					else if(ite->sfd == 4)
-					{
-						--mem.num[1];
-						cout<<"mem.num[1] = ["<<mem.num[1]<<"]"<<endl;
-						mem.mMap(mem.sfd,mem.num);
-					}
-					else if(ite->sfd == 5)
-					{
-						--mem.num[2];
-						cout<<"mem.num[2] = ["<<mem.num[2]<<"]"<<endl;
-						mem.mMap(mem.sfd,mem.num);
-					}
-					pthread_mutex_unlock(&mem_lock);
-					removefd(m_epollfd,retfd);
-					close(retfd);
+					++Ismap;
 				}
-				else
+/*
+				if(servflag)
 				{
-					int noffset = 0;
-					cout<<"["<<m_fork_id<<"] recv buf from client's packsize["<<packsize<<"]"<<endl;
-					buf = new char[packsize];
-					bzero(buf,packsize);
-					while(packsize)
+					cout<<"servflag is true"<<endl;
+					//由服务器发来的buf
+					char* buf = NULL;
+					int nlen;
+					int packsize;
+					int RealReadNum = recv(retfd,(char*)&packsize,sizeof(int),0);
+					nlen = packsize;
+					if(RealReadNum < 0)
+						continue;
+					if(RealReadNum == 0)
 					{
-						RealReadNum = recv(retfd,buf+noffset,packsize,0);
-						noffset += RealReadNum;
-						packsize -= RealReadNum;
+						cout<<"服务器宕机"<<endl;
 					}
-					cout<<buf<<endl;
-					ite = user.begin();
-					cout<<"retfd:"<<retfd<<endl;
-					while(ite != user.end())
+					else
 					{
-						if(ite->cfd == retfd)
+						cout<<"packsize:"<<packsize<<endl;
+						int noffset = 0;
+						buf = new char[packsize];
+						bzero(buf,packsize);
+						while(packsize)
 						{
-							cout<<"ite->cfd:"<<ite->cfd<<endl;
-							break;
+							RealReadNum = recv(retfd,buf+noffset,packsize,0);
+							noffset += RealReadNum;
+							packsize -= RealReadNum;
+
 						}
-						++ite;
+						cout<<"server.buf:"<<buf<<endl;
+						delete[] buf;
 					}
-					cout<<"ite->sfd:"<<ite->sfd<<endl;
-
-					send(ite->sfd,(char*)&nlen,sizeof(int),0);
-					send(ite->sfd,buf,nlen,0);
-					cout<<"send to servfd["<<ite->sfd<<"]"<<endl;
-					delete[] buf;
-					buf = NULL;
+					servflag = true;
 				}
-
+*/
 			}
 			else
 			{
@@ -333,6 +316,7 @@ void ProcessPool::run_child()
 
 		}
 	}
+	cout<<m_stop<<endl;
 }
 void ProcessPool::run_parent()
 {
@@ -377,15 +361,18 @@ void ProcessPool::run_parent()
 					break;
 				}
 				//轮寻
-				sub_process_counter = (i+1)&m_process_num;
+
 				//最小连接
+
+				sub_process_counter = (i+1)&m_process_num;
 				if(i >= m_process_num)
 				{
 					i = i % m_process_num;
 					sub_process_counter = 1;
 				}
+
 				send(m_sub_process[i].m_pipefd[0],(char*)&new_conn,sizeof(new_conn),0);
-				//cout<<"parent send to son["<<i<<"]"<<endl;
+				cout<<"sub_process_counter:"<<i<<endl;
 			}
 			else
 			{
